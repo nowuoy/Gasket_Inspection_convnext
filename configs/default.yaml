@@ -1,0 +1,102 @@
+# 이 파일의 TODO 항목은 촬영/라벨링/검증 데이터가 준비된 뒤 확정해야 합니다.
+seed: 42
+device: auto                 # auto | cpu | cuda
+
+classes:
+  - id: good
+    name_ko: 양품
+  - id: shrinkage
+    name_ko: 수축불량
+  - id: thread_defect
+    name_ko: 나사선 불량
+  - id: incomplete_molding
+    name_ko: 미성형 불량
+  - id: burr
+    name_ko: burr 불량
+  - id: contamination
+    name_ko: 이염 불량
+
+input:
+  # paired_files: <검사ID>__front.jpg + <검사ID>__side.jpg
+  # combined_image: 한 파일을 아래 규칙에 따라 전면/측면으로 분리
+  mode: paired_files
+  image_size: 224            # TODO: 작은 burr가 보존되는지 확인 후 224/320/384 비교
+  padding_value: [0, 0, 0]
+  mean: [0.485, 0.456, 0.406]
+  std: [0.229, 0.224, 0.225]
+  combined:
+    layout: horizontal       # horizontal | vertical
+    first_view: front        # front | side
+    split_ratio: 0.5         # 첫 영역이 전체 폭/높이에서 차지하는 비율
+
+model:
+  architecture: convnext_tiny
+  pretrained: true
+  fusion_hidden_dim: 512
+  dropout: 0.20
+  # 아래 두 헤드는 해당 라벨을 실제로 수집한 뒤 true로 변경합니다.
+  quality_head_enabled: false     # is_ng 라벨용
+  severity_head_enabled: false    # 0.0~1.0 severity 라벨용
+
+train:
+  manifest: data/labels.csv
+  output_dir: runs
+  batch_size: 8
+  epochs: 30
+  num_workers: 0             # Windows에서는 0부터 시작 권장
+  learning_rate: 0.0001
+  backbone_learning_rate: 0.00001
+  weight_decay: 0.01
+  label_smoothing: 0.05
+  class_weighting: auto      # auto | none
+  quality_loss_weight: 0.5
+  severity_loss_weight: 0.25
+  freeze_backbone_epochs: 3
+  early_stopping_patience: 7
+  checkpoint_metric: macro_f1  # macro_f1 | ng_recall | quality_f1 | severity_mae
+  checkpoint_mode: max         # severity_mae를 선택할 때는 min
+  quality_metric_threshold: 0.5
+  mixed_precision: true
+  group_columns: [lot_id, capture_session]
+  enforce_group_disjoint: true
+  augmentation:
+    rotation_degrees: 5
+    translate_fraction: 0.03
+    brightness: 0.05
+    contrast: 0.05
+    saturation: 0.02         # 이염 신호를 훼손하지 않도록 강한 색 증강 금지
+
+decision:
+  criteria_version: TODO-v0
+  good_class: good
+  # class_only | quality_head | severity
+  # 현재 기본값은 결함 종류만으로 판정하는 임시 baseline입니다.
+  strategy: class_only
+  min_class_confidence: null  # TODO: validation/calibration 결과로 설정
+  low_confidence_action: NG   # OK | NG | REVIEW; 현장 안전을 위해 기본 NG
+  quality_ng_threshold: null # quality_head 전략을 켤 때 TODO
+  severity_ng_thresholds:    # severity 전략을 켤 때 클래스별 TODO
+    shrinkage: null
+    thread_defect: null
+    incomplete_molding: null
+    burr: null
+    contamination: null
+
+inference:
+  checkpoint: runs/best.pt   # 학습 후 생성되는 체크포인트 경로로 수정
+  use_amp: true
+  warmup_iterations: 2
+
+realtime:
+  inbox_dir: runtime/inbox
+  results_dir: runtime/results
+  state_db: runtime/state/inspections.sqlite3
+  poll_interval_s: 0.20
+  stable_checks: 3           # 크기/mtime이 연속으로 동일해야 읽음
+  pair_timeout_s: 10.0
+  retry_errors: false
+  retry_backoff_s: 5.0
+  max_retry_attempts: 3
+  # inspection_id에는 영문/숫자/_/-만 허용하여 경로 충돌을 방지합니다.
+  paired_filename_regex: "^(?P<id>[A-Za-z0-9_-]+)__(?P<view>front|side)\\.(?P<ext>jpg|jpeg|png|bmp|tif|tiff)$"
+  combined_filename_regex: "^(?P<id>[A-Za-z0-9_-]+)__combined\\.(?P<ext>jpg|jpeg|png|bmp|tif|tiff)$"
