@@ -1,0 +1,9 @@
+# CUDA 사용 시에는 먼저 환경에 맞는 PyTorch를 https://pytorch.org 에서 설치하세요.
+torch>=2.2,<3.0
+torchvision>=0.17,<1.0
+Pillow>=10.0
+PyYAML>=6.0
+numpy>=1.26
+scikit-learn>=1.4
+tqdm>=4.66
+pytest>=8.0
