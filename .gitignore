@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+runs/
+runtime/inbox/*
+runtime/results/*
+runtime/state/*
+!runtime/inbox/.gitkeep
+!runtime/results/.gitkeep
+!runtime/state/.gitkeep
+
