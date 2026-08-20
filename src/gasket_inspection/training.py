@@ -62,33 +62,20 @@ def _compute_loss(
     train_cfg: dict[str, Any],
 ) -> tuple[torch.Tensor, dict[str, float]]:
     class_loss = class_loss_fn(output["class_logits"], batch["class_target"])
-    total = class_loss
     parts = {"class": float(class_loss.detach().item())}
-
-    if "quality_logit" in output:
-        target = batch["quality_target"]
-        mask = torch.isfinite(target)
-        if not bool(mask.any()):
-            raise ValueError("quality head가 켜졌지만 현재 batch에 is_ng 라벨이 없습니다.")
-        quality_loss = F.binary_cross_entropy_with_logits(output["quality_logit"][mask], target[mask])
-        total = total + float(train_cfg.get("quality_loss_weight", 0.5)) * quality_loss
-        parts["quality"] = float(quality_loss.detach().item())
-
-    if "severity" in output:
-        target = batch["severity_target"]
-        mask = torch.isfinite(target)
-        if not bool(mask.any()):
-            raise ValueError("severity head가 켜졌지만 현재 batch에 severity 라벨이 없습니다.")
-        severity_loss = F.smooth_l1_loss(output["severity"][mask], target[mask])
-        total = total + float(train_cfg.get("severity_loss_weight", 0.25)) * severity_loss
-        parts["severity"] = float(severity_loss.detach().item())
+    target = batch["severity_target"]
+    if not bool(torch.isfinite(target).all()):
+        raise ValueError("현재 batch에 유효하지 않은 severity 라벨이 있습니다.")
+    severity_loss = F.smooth_l1_loss(output["severity"], target)
+    total = class_loss + float(train_cfg.get("severity_loss_weight", 1.0)) * severity_loss
+    parts["severity"] = float(severity_loss.detach().item())
 
     parts["total"] = float(total.detach().item())
     return total, parts
 
 
 def _move_batch(batch: dict[str, Any], device: torch.device) -> dict[str, Any]:
-    for key in ("image", "class_target", "quality_target", "severity_target"):
+    for key in ("image", "class_target", "severity_target"):
         batch[key] = batch[key].to(device, non_blocking=True)
     return batch
 
@@ -108,9 +95,7 @@ def evaluate(
     model.eval()
     targets: list[int] = []
     predictions: list[int] = []
-    provided_quality: list[float] = []
     probability_rows: list[list[float]] = []
-    quality_predictions: list[float] = []
     severity_predictions: list[float] = []
     severity_targets: list[float] = []
     losses: list[float] = []
@@ -122,20 +107,11 @@ def evaluate(
             loss, _ = _compute_loss(output, batch, class_loss_fn, train_cfg)
         pred = output["class_logits"].argmax(dim=1)
         batch_probabilities = torch.softmax(output["class_logits"].float(), dim=1)
-        batch_size = int(batch_probabilities.shape[0])
         targets.extend(batch["class_target"].cpu().tolist())
         predictions.extend(pred.cpu().tolist())
         probability_rows.extend(batch_probabilities.float().cpu().tolist())
-        provided_quality.extend(batch["quality_target"].cpu().tolist())
         severity_targets.extend(batch["severity_target"].cpu().tolist())
-        if "quality_logit" in output:
-            quality_predictions.extend(torch.sigmoid(output["quality_logit"]).float().cpu().tolist())
-        else:
-            quality_predictions.extend([math.nan] * batch_size)
-        if "severity" in output:
-            severity_predictions.extend(output["severity"].float().cpu().tolist())
-        else:
-            severity_predictions.extend([math.nan] * batch_size)
+        severity_predictions.extend(output["severity"].float().cpu().tolist())
         losses.append(float(loss.item()))
 
     labels = list(range(len(ordered_classes)))
@@ -150,35 +126,25 @@ def evaluate(
     )
     matrix = confusion_matrix(targets, predictions, labels=labels).tolist()
 
-    good_index = ordered_classes.index("good")
+    good_class = str(decision_cfg.get("good_class", "good"))
     true_ng: list[bool] = []
-    for class_target, quality, target_severity in zip(
-        targets, provided_quality, severity_targets, strict=True
-    ):
-        if math.isfinite(quality):
-            true_ng.append(bool(int(quality)))
-        elif decision_cfg.get("strategy") == "severity":
-            target_class = ordered_classes[class_target]
-            if target_class == "good":
-                true_ng.append(False)
-            else:
-                threshold = float(decision_cfg["severity_ng_thresholds"][target_class])
-                true_ng.append(float(target_severity) >= threshold)
+    for class_target, target_severity in zip(targets, severity_targets, strict=True):
+        target_class = ordered_classes[class_target]
+        if target_class == good_class:
+            true_ng.append(False)
         else:
-            true_ng.append(class_target != good_index)
+            threshold = float(decision_cfg["severity_ng_thresholds"][target_class])
+            true_ng.append(float(target_severity) >= threshold)
     policy = DecisionPolicy(decision_cfg, ordered_classes, display_names)
     statuses: list[str] = []
-    for values, quality, severity in zip(
-        probability_rows, quality_predictions, severity_predictions, strict=True
-    ):
+    for values, severity in zip(probability_rows, severity_predictions, strict=True):
         probabilities = {
             class_id: float(values[index]) for index, class_id in enumerate(ordered_classes)
         }
         statuses.append(
             policy.decide(
                 probabilities,
-                quality_probability=float(quality) if math.isfinite(quality) else None,
-                severity=float(severity) if math.isfinite(severity) else None,
+                severity=float(severity),
             ).status
         )
     false_accept = sum(
@@ -195,24 +161,6 @@ def evaluate(
     )
     ng_count = sum(true_ng)
     ok_count = len(true_ng) - ng_count
-
-    quality_indices = [
-        index
-        for index, (target, prediction) in enumerate(
-            zip(provided_quality, quality_predictions, strict=True)
-        )
-        if math.isfinite(target) and math.isfinite(prediction)
-    ]
-    quality_f1 = None
-    if quality_indices:
-        threshold = (
-            float(decision_cfg["quality_ng_threshold"])
-            if decision_cfg.get("strategy") == "quality_head"
-            else float(train_cfg.get("quality_metric_threshold", 0.5))
-        )
-        quality_true = [int(provided_quality[index]) for index in quality_indices]
-        quality_pred = [int(quality_predictions[index] >= threshold) for index in quality_indices]
-        quality_f1 = float(f1_score(quality_true, quality_pred, average="binary", zero_division=0))
 
     severity_pairs = [
         (target, prediction)
@@ -240,7 +188,6 @@ def evaluate(
         "ng_count": ng_count,
         "ok_count": ok_count,
         "review_count": statuses.count("REVIEW"),
-        "quality_f1": quality_f1,
         "severity_mae": severity_mae,
     }
 
@@ -266,8 +213,8 @@ def _save_checkpoint(
     metrics: dict[str, Any],
 ) -> None:
     payload = {
-        "schema_version": 2,
-        "task_type": "single_image_classification",
+        "schema_version": 3,
+        "task_type": "single_image_severity",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "epoch": epoch,
         "best_selection_value": best_selection_value,
@@ -320,11 +267,7 @@ def train(cfg: dict[str, Any]) -> Path:
     model.set_backbone_trainable(freeze_epochs == 0)
 
     backbone_params = list(model.backbone.parameters()) + list(model.feature_norm.parameters())
-    head_params = (
-        list(model.class_head.parameters())
-        + (list(model.quality_head.parameters()) if model.quality_head is not None else [])
-        + (list(model.severity_head.parameters()) if model.severity_head is not None else [])
-    )
+    head_params = list(model.class_head.parameters()) + list(model.severity_head.parameters())
     optimizer = AdamW(
         [
             {"params": backbone_params, "lr": float(train_cfg["backbone_learning_rate"])},
