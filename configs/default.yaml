@@ -28,7 +28,7 @@ model:
   pretrained: true
   dropout: 0.20
   # 아래 헤드는 해당 라벨을 실제로 수집한 뒤 true로 변경합니다.
-  severity_head_enabled: false    # 0.0~1.0 severity 라벨용 / 결함이 얼마나 심한지 판별
+  severity_head_enabled: true    # 0.0~1.0 severity 라벨용 / 결함이 얼마나 심한지 판별
 
 train:
   manifest: data/labels.csv
@@ -44,8 +44,8 @@ train:
   severity_loss_weight: 0.25  #severity head 손실 반영
   freeze_backbone_epochs: 3
   early_stopping_patience: 7
-  checkpoint_metric: macro_f1  # macro_f1 | ng_recall | quality_f1 | severity_mae 체크포인트 선택 기준
-  checkpoint_mode: max         # severity_mae를 선택할 때는 min
+  checkpoint_metric: severity_mae  # macro_f1 | ng_recall | quality_f1 | severity_mae 체크포인트 선택 기준
+  checkpoint_mode: min         # severity_mae를 선택할 때는 min
   mixed_precision: true
   group_columns: [lot_id, capture_session]  #데이터를 나눌 때 같은 lot이나 촬영 세션이 train/validation에 섞이지 않도록 그룹 기준으로 사용합니다.
   enforce_group_disjoint: true
