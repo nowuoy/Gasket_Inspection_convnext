@@ -65,16 +65,10 @@ class SingleInstanceLock:
 @dataclass(frozen=True)
 class ReadyItem:
     sample_id: str
-    front_path: Path | None = None
-    side_path: Path | None = None
-    combined_path: Path | None = None
+    image_path: Path
 
     def input_paths(self) -> list[tuple[str, Path]]:
-        if self.combined_path is not None:
-            return [("combined", self.combined_path)]
-        if self.front_path is None or self.side_path is None:
-            raise ValueError(f"{self.sample_id}: 두 view가 완성되지 않았습니다.")
-        return [("front", self.front_path), ("side", self.side_path)]
+        return [("image", self.image_path)]
 
 
 class StableFileTracker:
@@ -215,18 +209,13 @@ class FolderMonitor:
         realtime_cfg = cfg["realtime"]
         self.cfg = cfg
         self.predictor = predictor
-        self.input_mode = cfg["input"]["mode"]
         self.inbox = resolve_project_path(cfg, realtime_cfg["inbox_dir"])
         self.inbox.mkdir(parents=True, exist_ok=True)
         self.poll_interval = float(realtime_cfg.get("poll_interval_s", 0.2))
-        self.pair_timeout = float(realtime_cfg.get("pair_timeout_s", 10.0))
         self.retry_errors = bool(realtime_cfg.get("retry_errors", False))
         self.retry_backoff = float(realtime_cfg.get("retry_backoff_s", 5.0))
         self.max_retry_attempts = int(realtime_cfg.get("max_retry_attempts", 3))
-        regex_key = (
-            "paired_filename_regex" if self.input_mode == "paired_files" else "combined_filename_regex"
-        )
-        self.filename_pattern = re.compile(realtime_cfg[regex_key], flags=re.IGNORECASE)
+        self.filename_pattern = re.compile(realtime_cfg["filename_regex"], flags=re.IGNORECASE)
         self.stability = StableFileTracker(int(realtime_cfg.get("stable_checks", 3)))
         state_db = resolve_project_path(cfg, realtime_cfg["state_db"])
         self.instance_lock = instance_lock or SingleInstanceLock(
@@ -234,8 +223,6 @@ class FolderMonitor:
         )
         self.store = InspectionStore(state_db)
         self.writer = AtomicResultWriter(resolve_project_path(cfg, realtime_cfg["results_dir"]))
-        self.first_seen: dict[str, float] = {}
-        self.timeout_warned: set[str] = set()
         self.handled_signatures: dict[
             str, tuple[tuple[str, str, int, int, int, int], ...]
         ] = {}
@@ -248,69 +235,25 @@ class FolderMonitor:
         self.instance_lock.close()
 
     def _discover(self) -> list[ReadyItem]:
-        if self.input_mode == "combined_image":
-            candidates: dict[str, list[Path]] = {}
-            for path in sorted(self.inbox.iterdir()):
-                if not path.is_file():
-                    continue
-                match = self.filename_pattern.fullmatch(path.name)
-                if match:
-                    candidates.setdefault(match.group("id").upper(), []).append(path)
-            ready: list[ReadyItem] = []
-            for sample_id, paths in candidates.items():
-                if len(paths) != 1:
-                    print(
-                        f"[ERROR] {sample_id}: combined 파일이 둘 이상이므로 처리하지 않습니다: {paths}",
-                        file=sys.stderr,
-                    )
-                    continue
-                path = paths[0]
-                if self.stability.is_stable(path):
-                    ready.append(ReadyItem(sample_id=sample_id, combined_path=path))
-            return ready
-
-        pairs: dict[str, dict[str, Path]] = {}
-        invalid_ids: set[str] = set()
+        candidates: dict[str, list[Path]] = {}
         for path in sorted(self.inbox.iterdir()):
             if not path.is_file():
                 continue
             match = self.filename_pattern.fullmatch(path.name)
             if not match:
                 continue
-            sample_id = match.group("id").upper()
-            view = match.group("view").lower()
-            current = pairs.setdefault(sample_id, {})
-            if view in current and current[view] != path:
-                print(f"[ERROR] {sample_id}: {view} 파일이 둘 이상입니다.", file=sys.stderr)
-                invalid_ids.add(sample_id)
-                continue
-            current[view] = path
-            self.first_seen.setdefault(sample_id, time.monotonic())
-
-        ready = []
-        now = time.monotonic()
-        for sample_id, views in pairs.items():
-            if sample_id in invalid_ids:
-                continue
-            if {"front", "side"}.issubset(views):
-                front_stable = self.stability.is_stable(views["front"])
-                side_stable = self.stability.is_stable(views["side"])
-                if front_stable and side_stable:
-                    ready.append(
-                        ReadyItem(
-                            sample_id=sample_id,
-                            front_path=views["front"],
-                            side_path=views["side"],
-                        )
-                    )
-                continue
-            if now - self.first_seen[sample_id] >= self.pair_timeout and sample_id not in self.timeout_warned:
-                missing = "side" if "front" in views else "front"
+            candidates.setdefault(match.group("id").upper(), []).append(path)
+        ready: list[ReadyItem] = []
+        for sample_id, paths in candidates.items():
+            if len(paths) != 1:
                 print(
-                    f"[WARN] {sample_id}: {missing} 이미지가 {self.pair_timeout:.1f}초 안에 오지 않았습니다. 대기합니다.",
+                    f"[ERROR] {sample_id}: 같은 ID의 이미지가 둘 이상이므로 처리하지 않습니다: {paths}",
                     file=sys.stderr,
                 )
-                self.timeout_warned.add(sample_id)
+                continue
+            path = paths[0]
+            if self.stability.is_stable(path):
+                ready.append(ReadyItem(sample_id=sample_id, image_path=path))
         return ready
 
     @staticmethod
@@ -318,10 +261,10 @@ class FolderMonitor:
         item: ReadyItem,
     ) -> tuple[tuple[str, str, int, int, int, int], ...]:
         signature = []
-        for view, path in item.input_paths():
+        for input_name, path in item.input_paths():
             stat = path.stat()
             signature.append(
-                (view, str(path), stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_ino)
+                (input_name, str(path), stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_ino)
             )
         return tuple(signature)
 
@@ -332,7 +275,7 @@ class FolderMonitor:
         records: list[dict[str, Any]] = []
         snapshots: dict[str, bytes] = {}
         fingerprint_builder = hashlib.sha256()
-        for view, path in item.input_paths():
+        for input_name, path in item.input_paths():
             before = path.stat()
             file_bytes = path.read_bytes()
             file_hash = hashlib.sha256(file_bytes).hexdigest()
@@ -341,16 +284,16 @@ class FolderMonitor:
                 raise OSError(f"hash 계산 중 파일이 변경되었습니다: {path}")
             records.append(
                 {
-                    "view": view,
+                    "input_name": input_name,
                     "path": str(path),
                     "sha256": file_hash,
                     "size_bytes": stat.st_size,
                     "mtime_ns": stat.st_mtime_ns,
                 }
             )
-            fingerprint_builder.update(view.encode("utf-8"))
+            fingerprint_builder.update(input_name.encode("utf-8"))
             fingerprint_builder.update(file_hash.encode("ascii"))
-            snapshots[view] = file_bytes
+            snapshots[input_name] = file_bytes
         return records, fingerprint_builder.hexdigest(), snapshots
 
     def _schedule_retry(
@@ -384,12 +327,10 @@ class FolderMonitor:
         try:
             stat_signature = self._stat_signature(item)
             if self.handled_signatures.get(item.sample_id) == stat_signature:
-                self.first_seen.pop(item.sample_id, None)
                 return False
             input_records, fingerprint, snapshots = self._input_metadata(item)
             if not self.store.should_process(item.sample_id, fingerprint, self.retry_errors):
                 self.handled_signatures[item.sample_id] = stat_signature
-                self.first_seen.pop(item.sample_id, None)
                 return False
             self.store.claim(item.sample_id, fingerprint)
             self.input_retry_attempts.pop(item.sample_id, None)
@@ -413,9 +354,7 @@ class FolderMonitor:
         try:
             result = self.predictor.predict_bytes(
                 item.sample_id,
-                front_bytes=snapshots.get("front"),
-                side_bytes=snapshots.get("side"),
-                combined_bytes=snapshots.get("combined"),
+                image_bytes=snapshots["image"],
             )
             result["inputs"] = input_records
             result.setdefault("latency_ms", {})["watcher_to_prediction"] = (
@@ -454,8 +393,6 @@ class FolderMonitor:
             except (BrokenPipeError, OSError, UnicodeError):
                 pass
             self._schedule_retry(item.sample_id, stat_signature)
-            self.first_seen.pop(item.sample_id, None)
-            self.timeout_warned.discard(item.sample_id)
             return False
 
         try:
@@ -467,7 +404,6 @@ class FolderMonitor:
             except Exception as store_exc:
                 print(f"[ERROR] {item.sample_id}: DB 오류 상태 저장 실패: {store_exc}", file=sys.stderr)
             self._schedule_retry(item.sample_id, stat_signature)
-            self.first_seen.pop(item.sample_id, None)
             return False
 
         db_finished = False
@@ -494,8 +430,6 @@ class FolderMonitor:
         if not db_finished:
             # 정상 JSON은 이미 원자적으로 저장되었습니다. 재추론/ERROR 덮어쓰기를 막습니다.
             self.handled_signatures[item.sample_id] = stat_signature
-            self.first_seen.pop(item.sample_id, None)
-            self.timeout_warned.discard(item.sample_id)
             return True
 
         try:
@@ -507,8 +441,6 @@ class FolderMonitor:
         self.retry_after.pop(item.sample_id, None)
         self.retry_attempts.pop(item.sample_id, None)
         self.input_retry_attempts.pop(item.sample_id, None)
-        self.first_seen.pop(item.sample_id, None)
-        self.timeout_warned.discard(item.sample_id)
         return True
 
     def scan_once(self) -> int:
@@ -518,7 +450,7 @@ class FolderMonitor:
         return processed
 
     def run_forever(self) -> None:
-        print(f"감시 시작: {self.inbox} (mode={self.input_mode})")
+        print(f"단일 이미지 감시 시작: {self.inbox}")
         while True:
             try:
                 self.scan_once()
