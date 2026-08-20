@@ -29,7 +29,7 @@ from .config import (
 )
 from .dataset import build_datasets, calculate_class_weights
 from .decision import DecisionPolicy
-from .model import DualViewConvNeXt, build_model
+from .model import SingleImageConvNeXt, build_model
 
 
 def seed_everything(seed: int) -> None:
@@ -88,14 +88,14 @@ def _compute_loss(
 
 
 def _move_batch(batch: dict[str, Any], device: torch.device) -> dict[str, Any]:
-    for key in ("front", "side", "class_target", "quality_target", "severity_target"):
+    for key in ("image", "class_target", "quality_target", "severity_target"):
         batch[key] = batch[key].to(device, non_blocking=True)
     return batch
 
 
 @torch.inference_mode()
 def evaluate(
-    model: DualViewConvNeXt,
+    model: SingleImageConvNeXt,
     loader: DataLoader,
     device: torch.device,
     ordered_classes: list[str],
@@ -118,7 +118,7 @@ def evaluate(
     for batch in loader:
         batch = _move_batch(batch, device)
         with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=amp_enabled):
-            output = model(batch["front"], batch["side"])
+            output = model(batch["image"])
             loss, _ = _compute_loss(output, batch, class_loss_fn, train_cfg)
         pred = output["class_logits"].argmax(dim=1)
         batch_probabilities = torch.softmax(output["class_logits"].float(), dim=1)
@@ -254,7 +254,7 @@ def _json_dump(path: Path, value: dict[str, Any]) -> None:
 def _save_checkpoint(
     path: Path,
     *,
-    model: DualViewConvNeXt,
+    model: SingleImageConvNeXt,
     optimizer: AdamW,
     scheduler: CosineAnnealingLR,
     epoch: int,
@@ -266,7 +266,8 @@ def _save_checkpoint(
     metrics: dict[str, Any],
 ) -> None:
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
+        "task_type": "single_image_classification",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "epoch": epoch,
         "best_selection_value": best_selection_value,
@@ -320,8 +321,7 @@ def train(cfg: dict[str, Any]) -> Path:
 
     backbone_params = list(model.backbone.parameters()) + list(model.feature_norm.parameters())
     head_params = (
-        list(model.fusion.parameters())
-        + list(model.class_head.parameters())
+        list(model.class_head.parameters())
         + (list(model.quality_head.parameters()) if model.quality_head is not None else [])
         + (list(model.severity_head.parameters()) if model.severity_head is not None else [])
     )
@@ -373,7 +373,7 @@ def train(cfg: dict[str, Any]) -> Path:
             batch = _move_batch(batch, device)
             optimizer.zero_grad(set_to_none=True)
             with torch.autocast(device_type=device.type, dtype=torch.float16, enabled=amp_enabled):
-                output = model(batch["front"], batch["side"])
+                output = model(batch["image"])
                 loss, loss_parts = _compute_loss(output, batch, class_loss_fn, train_cfg)
             scaler.scale(loss).backward()
             scaler.step(optimizer)
