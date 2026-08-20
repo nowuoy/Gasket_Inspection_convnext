@@ -90,8 +90,6 @@ def validate_config(cfg: dict[str, Any]) -> None:
         raise ConfigError("클래스 표시명이 중복되었습니다.")
 
     input_cfg = cfg.get("input", {})
-    if input_cfg.get("mode") not in {"paired_files", "combined_image"}:
-        raise ConfigError("input.mode는 paired_files 또는 combined_image여야 합니다.")
     if int(input_cfg.get("image_size", 0)) <= 0:
         raise ConfigError("input.image_size는 양수여야 합니다.")
     for key in ("mean", "std", "padding_value"):
@@ -113,19 +111,9 @@ def validate_config(cfg: dict[str, Any]) -> None:
         for value in input_cfg["padding_value"]
     ):
         raise ConfigError("input.padding_value는 0~255 범위여야 합니다.")
-    combined = input_cfg.get("combined", {})
-    if combined.get("layout") not in {"horizontal", "vertical"}:
-        raise ConfigError("input.combined.layout 값이 올바르지 않습니다.")
-    if combined.get("first_view") not in {"front", "side"}:
-        raise ConfigError("input.combined.first_view 값이 올바르지 않습니다.")
-    if not 0.05 < float(combined.get("split_ratio", 0.0)) < 0.95:
-        raise ConfigError("input.combined.split_ratio는 0.05~0.95 사이여야 합니다.")
-
     model_cfg = cfg.get("model", {})
     if model_cfg.get("architecture") not in {"convnext_tiny", "convnext_small", "convnext_base"}:
         raise ConfigError("지원하지 않는 model.architecture입니다.")
-    if int(model_cfg.get("fusion_hidden_dim", 0)) <= 0:
-        raise ConfigError("model.fusion_hidden_dim은 양수여야 합니다.")
     if not 0.0 <= float(model_cfg.get("dropout", -1.0)) < 1.0:
         raise ConfigError("model.dropout은 0 이상 1 미만이어야 합니다.")
 
@@ -230,16 +218,11 @@ def validate_config(cfg: dict[str, Any]) -> None:
         raise ConfigError("realtime.poll_interval_s는 0보다 커야 합니다.")
     if int(realtime_cfg.get("stable_checks", 0)) < 1:
         raise ConfigError("realtime.stable_checks는 1 이상이어야 합니다.")
-    if float(realtime_cfg.get("pair_timeout_s", -1.0)) < 0.0:
-        raise ConfigError("realtime.pair_timeout_s는 0 이상이어야 합니다.")
     if float(realtime_cfg.get("retry_backoff_s", -1.0)) < 0.0:
         raise ConfigError("realtime.retry_backoff_s는 0 이상이어야 합니다.")
     if int(realtime_cfg.get("max_retry_attempts", 0)) < 1:
         raise ConfigError("realtime.max_retry_attempts는 1 이상이어야 합니다.")
-    regex_requirements = {
-        "paired_filename_regex": {"id", "view", "ext"},
-        "combined_filename_regex": {"id", "ext"},
-    }
+    regex_requirements = {"filename_regex": {"id", "ext"}}
     for key, required_groups in regex_requirements.items():
         try:
             pattern = re.compile(str(realtime_cfg[key]))
