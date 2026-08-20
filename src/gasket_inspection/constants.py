@@ -11,9 +11,7 @@ EXPECTED_CLASS_IDS = (
 
 MANIFEST_COLUMNS = (
     "sample_id",
-    "front_path",
-    "side_path",
-    "combined_path",
+    "image_path",
     "defect_type",
     "is_ng",
     "severity",
@@ -23,4 +21,3 @@ MANIFEST_COLUMNS = (
 )
 
 FINAL_STATUSES = {"OK", "NG", "REVIEW"}
-
