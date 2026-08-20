@@ -12,15 +12,13 @@ from torch.utils.data import Dataset
 
 from .config import class_ids, resolve_project_path
 from .constants import MANIFEST_COLUMNS
-from .images import build_transform, load_view_pair
+from .images import build_transform, open_rgb
 
 
 @dataclass(frozen=True)
 class ManifestRow:
     sample_id: str
-    front_path: Path | None
-    side_path: Path | None
-    combined_path: Path | None
+    image_path: Path | None
     defect_type: str
     is_ng: float
     severity: float
@@ -84,9 +82,7 @@ def read_manifest(path: str | Path) -> list[ManifestRow]:
             rows.append(
                 ManifestRow(
                     sample_id=sample_id,
-                    front_path=_optional_path(manifest_path.parent, raw["front_path"]),
-                    side_path=_optional_path(manifest_path.parent, raw["side_path"]),
-                    combined_path=_optional_path(manifest_path.parent, raw["combined_path"]),
+                    image_path=_optional_path(manifest_path.parent, raw["image_path"]),
                     defect_type=raw["defect_type"].strip(),
                     is_ng=_optional_binary(raw["is_ng"], "is_ng", sample_id),
                     severity=_optional_float(raw["severity"], "severity", sample_id),
@@ -105,10 +101,9 @@ def validate_rows(rows: list[ManifestRow], cfg: dict[str, Any]) -> dict[str, Any
     valid_classes = set(class_ids(cfg))
     seen_ids: set[str] = set()
     counts: Counter[tuple[str, str]] = Counter()
-    mode = cfg["input"]["mode"]
     quality_required = bool(cfg["model"].get("quality_head_enabled", False))
     severity_required = bool(cfg["model"].get("severity_head_enabled", False))
-    path_owners: dict[str, tuple[str, str]] = {}
+    path_owners: dict[str, str] = {}
 
     for row in rows:
         if row.sample_id in seen_ids:
@@ -118,34 +113,18 @@ def validate_rows(rows: list[ManifestRow], cfg: dict[str, Any]) -> dict[str, Any
             raise ValueError(f"{row.sample_id}: 알 수 없는 defect_type={row.defect_type}")
         if row.split not in {"train", "val", "test"}:
             raise ValueError(f"{row.sample_id}: split은 train, val, test 중 하나여야 합니다.")
-        if mode == "paired_files":
-            paths = [row.front_path, row.side_path]
-            if any(path is None for path in paths):
-                raise ValueError(f"{row.sample_id}: front_path/side_path가 모두 필요합니다.")
-        else:
-            paths = [row.combined_path]
-            if row.combined_path is None:
-                raise ValueError(f"{row.sample_id}: combined_path가 필요합니다.")
-        for path in paths:
-            if path is not None and not path.is_file():
-                raise FileNotFoundError(f"{row.sample_id}: 이미지가 없습니다: {path}")
-        for view_name, path in (
-            ("front", row.front_path),
-            ("side", row.side_path),
-            ("combined", row.combined_path),
-        ):
-            if path is None or (mode == "paired_files" and view_name == "combined"):
-                continue
-            if mode == "combined_image" and view_name != "combined":
-                continue
-            path_key = str(path).casefold()
-            previous = path_owners.get(path_key)
-            if previous is not None:
-                raise ValueError(
-                    f"이미지 경로가 중복 사용되었습니다: {path} "
-                    f"({previous[0]}/{previous[1]}, {row.sample_id}/{view_name})"
-                )
-            path_owners[path_key] = (row.sample_id, view_name)
+        if row.image_path is None:
+            raise ValueError(f"{row.sample_id}: image_path가 필요합니다.")
+        if not row.image_path.is_file():
+            raise FileNotFoundError(f"{row.sample_id}: 이미지가 없습니다: {row.image_path}")
+        path_key = str(row.image_path).casefold()
+        previous = path_owners.get(path_key)
+        if previous is not None:
+            raise ValueError(
+                f"이미지 경로가 중복 사용되었습니다: {row.image_path} "
+                f"({previous}, {row.sample_id})"
+            )
+        path_owners[path_key] = row.sample_id
         if quality_required and math.isnan(row.is_ng):
             raise ValueError(f"{row.sample_id}: quality head 학습에는 is_ng 라벨이 필요합니다.")
         if severity_required and math.isnan(row.severity):
@@ -224,16 +203,12 @@ class GasketDataset(Dataset):
 
     def __getitem__(self, index: int) -> dict[str, Any]:
         row = self.rows[index]
-        front, side = load_view_pair(
-            self.input_cfg,
-            front_path=row.front_path,
-            side_path=row.side_path,
-            combined_path=row.combined_path,
-        )
+        if row.image_path is None:
+            raise ValueError(f"{row.sample_id}: image_path가 필요합니다.")
+        image = open_rgb(row.image_path)
         return {
             "sample_id": row.sample_id,
-            "front": self.transform(front),
-            "side": self.transform(side),
+            "image": self.transform(image),
             "class_target": torch.tensor(self.class_to_index[row.defect_type], dtype=torch.long),
             "quality_target": torch.tensor(row.is_ng, dtype=torch.float32),
             "severity_target": torch.tensor(row.severity, dtype=torch.float32),
