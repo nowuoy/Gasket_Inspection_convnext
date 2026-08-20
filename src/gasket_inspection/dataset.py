@@ -20,7 +20,6 @@ class ManifestRow:
     sample_id: str
     image_path: Path | None
     defect_type: str
-    is_ng: float
     severity: float
     lot_id: str
     capture_session: str
@@ -37,15 +36,6 @@ def _optional_float(value: str, field_name: str, sample_id: str) -> float:
         raise ValueError(f"{sample_id}: {field_name} 값이 숫자가 아닙니다: {value}") from exc
     if not 0.0 <= parsed <= 1.0:
         raise ValueError(f"{sample_id}: {field_name}는 0.0~1.0이어야 합니다.")
-    return parsed
-
-
-def _optional_binary(value: str, field_name: str, sample_id: str) -> float:
-    parsed = _optional_float(value, field_name, sample_id)
-    if math.isnan(parsed):
-        return parsed
-    if parsed not in {0.0, 1.0}:
-        raise ValueError(f"{sample_id}: {field_name}는 0 또는 1이어야 합니다.")
     return parsed
 
 
@@ -84,7 +74,6 @@ def read_manifest(path: str | Path) -> list[ManifestRow]:
                     sample_id=sample_id,
                     image_path=_optional_path(manifest_path.parent, raw["image_path"]),
                     defect_type=raw["defect_type"].strip(),
-                    is_ng=_optional_binary(raw["is_ng"], "is_ng", sample_id),
                     severity=_optional_float(raw["severity"], "severity", sample_id),
                     lot_id=raw["lot_id"].strip(),
                     capture_session=raw["capture_session"].strip(),
@@ -101,8 +90,6 @@ def validate_rows(rows: list[ManifestRow], cfg: dict[str, Any]) -> dict[str, Any
     valid_classes = set(class_ids(cfg))
     seen_ids: set[str] = set()
     counts: Counter[tuple[str, str]] = Counter()
-    quality_required = bool(cfg["model"].get("quality_head_enabled", False))
-    severity_required = bool(cfg["model"].get("severity_head_enabled", False))
     path_owners: dict[str, str] = {}
 
     for row in rows:
@@ -125,10 +112,8 @@ def validate_rows(rows: list[ManifestRow], cfg: dict[str, Any]) -> dict[str, Any
                 f"({previous}, {row.sample_id})"
             )
         path_owners[path_key] = row.sample_id
-        if quality_required and math.isnan(row.is_ng):
-            raise ValueError(f"{row.sample_id}: quality head 학습에는 is_ng 라벨이 필요합니다.")
-        if severity_required and math.isnan(row.severity):
-            raise ValueError(f"{row.sample_id}: severity head 학습에는 severity 라벨이 필요합니다.")
+        if math.isnan(row.severity):
+            raise ValueError(f"{row.sample_id}: severity 라벨이 필요합니다.")
         counts[(row.split, row.defect_type)] += 1
 
     split_names = {row.split for row in rows}
@@ -141,16 +126,6 @@ def validate_rows(rows: list[ManifestRow], cfg: dict[str, Any]) -> dict[str, Any
         if missing_classes:
             raise ValueError(
                 f"{split_name} split에 없는 클래스가 있습니다: " + ", ".join(missing_classes)
-            )
-
-    for field_name in ("is_ng", "severity"):
-        present_count = sum(
-            math.isfinite(float(getattr(row, field_name))) for row in rows
-        )
-        if present_count not in {0, len(rows)}:
-            raise ValueError(
-                f"선택 라벨 {field_name}는 전체 행을 채우거나 전체를 비워야 합니다. "
-                f"현재 {present_count}/{len(rows)}행만 채워졌습니다."
             )
 
     train_cfg = cfg["train"]
@@ -210,7 +185,6 @@ class GasketDataset(Dataset):
             "sample_id": row.sample_id,
             "image": self.transform(image),
             "class_target": torch.tensor(self.class_to_index[row.defect_type], dtype=torch.long),
-            "quality_target": torch.tensor(row.is_ng, dtype=torch.float32),
             "severity_target": torch.tensor(row.severity, dtype=torch.float32),
         }
 
