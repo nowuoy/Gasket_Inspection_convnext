@@ -1,4 +1,4 @@
-[README.md](https://github.com/user-attachments/files/31250887/README.md)
+[README.md](https://github.com/user-attachments/files/31258045/README.md)
 # 고무패킹 ConvNeXt 검사 프로토타입
 
 Hikrobot MV-CS050-10GC로 취득해 PC에 저장된 상단면 또는 측면 이미지 한 장을 받아, 6개 클래스 중 하나로 분류하고 OK/NG 결과를 JSON으로 내보내는 확장용 소스코드입니다. 각 사진은 다른 사진과 결합하거나 짝짓지 않고 독립적으로 처리합니다. 카메라 trigger·노출·GigE SDK 제어는 포함하지 않았고, 카메라 제어 프로그램과 이 프로젝트의 계약은 **이미지 파일명과 저장 폴더**로 분리했습니다.
@@ -8,7 +8,7 @@ Hikrobot MV-CS050-10GC로 취득해 PC에 저장된 상단면 또는 측면 이�
 - 클래스: `good`, `shrinkage`, `thread_defect`, `incomplete_molding`, `burr`, `contamination`
 - ImageNet 사전학습 ConvNeXt-Tiny 기반 단일 이미지 분류기
 - 상단면과 측면 사진을 같은 신경망으로 각각 독립 처리하는 6-class head
-- 선택 가능한 `is_ng` quality head 및 `severity` head의 골격
+- 항상 활성화되는 `severity` head와 클래스별 NG threshold
 - 학습/검증, class imbalance weight, macro-F1, 클래스별 지표, confusion matrix
 - 단일 건 추론
 - 폴더 자동 감시, 완전쓰기 확인, 이미지 한 장 단위 처리
@@ -28,21 +28,14 @@ runtime/inbox ── 파일 안정화 ──► ConvNeXt ──► 판정 정책
 
 ## 가장 중요한 판정 전제
 
-현재 6-class 라벨만으로 학습할 수 있는 것은 **결함 종류**입니다. softmax 확률이 높다는 것은 모델이 그 종류라고 확신한다는 뜻이지, 결함이 심하다는 뜻이 아닙니다.
-
-그래서 기본 설정은 임시 baseline인 다음 규칙입니다.
+모델은 각 사진에서 결함 종류와 `0.0~1.0` severity를 함께 예측합니다. 클래스 확률은 결함 종류와 적용할 threshold를 선택하고, 최종 OK/NG는 severity로만 결정합니다.
 
 ```text
-예측 class = good       → OK
-예측 class = 나머지 5개 → NG + 해당 불량 종류
+severity < 예측 결함 클래스 threshold  → OK
+severity >= 예측 결함 클래스 threshold → NG + 해당 불량 종류
 ```
 
-경미한 불량을 OK, 심한 불량을 NG로 나누려면 라벨링 때 다음 중 하나를 반드시 추가해야 합니다.
-
-1. `is_ng`: 현장 기준에 따른 0(OK)/1(NG)
-2. `severity`: 합의된 기준의 0.0~1.0 심각도
-
-그 뒤 `configs/default.yaml`에서 해당 head와 decision strategy를 켜고, validation 데이터로 threshold를 정합니다. 값이 비어 있는 상태에서 해당 전략을 켜면 프로그램이 의도적으로 시작을 거부합니다.
+따라서 모든 라벨 행에 합의된 기준의 `severity`를 반드시 입력해야 합니다. YAML의 초기 `0.5` threshold는 실행 확인용일 뿐이며, validation 데이터로 클래스별 threshold를 보정한 뒤 `criteria_version`을 변경해야 합니다.
 
 또한 현재 코드는 한 제품에 대표 결함이 하나라는 **single-label** 전제입니다. 두 종류 이상의 결함이 동시에 존재할 수 있고 모두 보고해야 한다면, 촬영 전에 라벨을 5개 독립 binary label로 바꾸고 multi-label sigmoid 구조로 수정해야 합니다.
 
@@ -79,9 +72,9 @@ P000002_SIDE.jpg
 `data/labels.csv`는 현재 header만 있습니다. 이미지 경로는 이 CSV가 있는 `data/` 폴더 기준 상대 경로 또는 절대 경로로 넣습니다.
 
 ```csv
-sample_id,image_path,defect_type,is_ng,severity,lot_id,capture_session,split
-P000001_TOP,images/P000001_TOP.jpg,good,0,0.0,LOT01,S01,train
-P000002_SIDE,images/P000002_SIDE.jpg,burr,1,0.8,LOT02,S02,val
+sample_id,image_path,defect_type,severity,lot_id,capture_session,split
+P000001_TOP,images/P000001_TOP.jpg,good,0.0,LOT01,S01,train
+P000002_SIDE,images/P000002_SIDE.jpg,burr,0.8,LOT02,S02,val
 ```
 
 각 열의 의미는 다음과 같습니다.
@@ -91,13 +84,12 @@ P000002_SIDE,images/P000002_SIDE.jpg,burr,1,0.8,LOT02,S02,val
 | `sample_id` | 사진 한 장의 고유 검사 ID |
 | `image_path` | 독립적으로 학습·검사할 이미지 경로 |
 | `defect_type` | 6개 영문 class ID 중 하나 |
-| `is_ng` | 선택 라벨. 기준 확정 전에는 빈칸 가능 |
-| `severity` | 선택 라벨 0.0~1.0. 기준 확정 전에는 빈칸 가능 |
+| `severity` | 필수 심각도 라벨 0.0~1.0 |
 | `lot_id` | 생산 lot/촬영 묶음. split 누수 검사용 |
 | `capture_session` | 촬영 세션/날짜/조명 설정 구분 |
 | `split` | `train`, `val`, `test` 중 하나 |
 
-`quality_head_enabled: false`, `severity_head_enabled: false`일 때 선택 라벨은 비워 둘 수 있습니다. head를 켜면 모든 학습·검증 행에 해당 라벨이 있어야 합니다.
+`severity`는 모든 학습·검증 행에 있어야 하며 빈칸이면 manifest 검증이 중단됩니다.
 
 같은 lot 또는 촬영 세션을 train과 val에 나누면 배경·조명 특징을 외워 성능이 부풀 수 있습니다. 기본 validator는 `lot_id`와 `capture_session` 중 하나라도 split 사이에 겹치면 중단하며, train/val에 6개 클래스가 모두 있는지도 확인합니다. 모든 클래스가 각 평가 split에 포함되도록 원본 제품 단위로 나누십시오.
 
@@ -118,12 +110,12 @@ python scripts/train.py --config configs/default.yaml
 결과는 기본적으로 다음 위치에 생깁니다.
 
 ```text
-runs/best.pt       validation macro-F1이 가장 좋았던 checkpoint
+runs/best.pt       validation severity MAE가 가장 낮았던 checkpoint
 runs/last.pt       마지막 epoch checkpoint
 runs/history.json  loss, macro-F1, 클래스별 지표, 오판 수치
 ```
 
-기본 best 기준은 `train.checkpoint_metric: macro_f1`입니다. `quality_head`를 실제 판정에 쓴다면 `quality_f1` 또는 `ng_recall`, 연속 severity를 우선한다면 `severity_mae`와 `checkpoint_mode: min` 등으로 목적에 맞게 바꾸십시오. false accept/reject는 YAML의 실제 `decision.strategy`를 그대로 적용해 계산됩니다. 단, `ng_recall`만 최대화하면 모든 제품을 NG로 보내는 모델도 유리하므로 `false_reject_rate`와 `review_count`를 반드시 함께 제한해야 합니다.
+기본 best 기준은 `train.checkpoint_metric: severity_mae`, `checkpoint_mode: min`입니다. false accept/reject는 클래스별 severity threshold를 적용해 계산됩니다. severity MAE뿐 아니라 `false_accept_rate`, `false_reject_rate`, 클래스별 recall도 함께 확인하십시오.
 
 검사에서는 전체 accuracy만 보지 말고 다음 값을 함께 확인하십시오.
 
@@ -196,8 +188,7 @@ python scripts/watch_folder.py --config configs/default.yaml --checkpoint runs/b
     "burr": 0.88,
     "contamination": 0.02
   },
-  "quality_probability": null,
-  "severity": null,
+  "severity": 0.81,
   "decision": {
     "status": "NG",
     "defect_type": "burr",
@@ -205,41 +196,22 @@ python scripts/watch_folder.py --config configs/default.yaml --checkpoint runs/b
     "observed_class": "burr",
     "confidence": 0.88,
     "defect_confidence": 0.88,
-    "applied_rule": "provisional_good_vs_defect_class",
+    "applied_rule": "class_specific_severity",
+    "applied_threshold": 0.5,
     "criteria_version": "TODO-v0",
     "provisional": true
   }
 }
 ```
 
-`provisional: true`는 심각도 기준이 아직 반영되지 않은 임시 판정이라는 뜻입니다. 실제 기준을 확정할 때 `criteria_version`도 함께 변경해 결과 추적이 가능하게 하십시오.
+`provisional: true`는 `criteria_version`이 아직 `TODO`여서 threshold가 임시라는 뜻입니다. 실제 기준을 확정할 때 `criteria_version`도 함께 변경해 결과 추적이 가능하게 하십시오.
 
-## 8. 심각도/NG 기준을 추가하는 방법
+## 8. 심각도/NG 기준을 확정하는 방법
 
-### 방식 A: 직접 OK/NG 라벨
-
-라벨러가 현장 기준대로 `is_ng`를 채운 뒤 설정을 바꿉니다.
+객관적인 라벨링 기준으로 모든 항목의 `severity`를 채운 뒤 validation 결과로 설정을 바꿉니다.
 
 ```yaml
-model:
-  quality_head_enabled: true
 decision:
-  strategy: quality_head
-  quality_ng_threshold: 0.50  # TODO: 임의값 사용 금지, validation에서 결정
-  criteria_version: CRITERIA-2026-01
-```
-
-재학습 후 validation에서 false accept 비용을 기준으로 threshold를 보정합니다.
-
-### 방식 B: 심각도 점수
-
-객관적인 라벨링 기준으로 모든 항목의 `severity`를 채운 뒤 설정을 바꿉니다.
-
-```yaml
-model:
-  severity_head_enabled: true
-decision:
-  strategy: severity
   severity_ng_thresholds:
     shrinkage: 0.65       # 모두 validation에서 별도 결정
     thread_defect: 0.60
@@ -274,9 +246,9 @@ python -m pytest
 
 - `data/labels.csv`의 이미지 경로와 6-class 라벨
 - 한 제품에 복수 결함이 가능한지 여부 및 대표 결함 선정 규칙
-- 경미 결함을 허용한다면 `is_ng` 또는 객관적 `severity` 라벨
+- 모든 사진의 객관적 `severity` 라벨
 - `input.image_size`
-- validation 기반 low-confidence 및 NG threshold
+- validation 기반 클래스별 severity NG threshold
 - `decision.criteria_version`
 - `inference.checkpoint`
 - 실제 카메라 저장 폴더와 파일명 정규식
