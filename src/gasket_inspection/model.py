@@ -44,10 +44,7 @@ class SingleImageConvNeXt(nn.Module):
         self.dropout = nn.Dropout(dropout)
         self.class_head = nn.Linear(feature_dim, num_classes)
 
-        self.quality_head_enabled = bool(model_cfg.get("quality_head_enabled", False))
-        self.severity_head_enabled = bool(model_cfg.get("severity_head_enabled", False))
-        self.quality_head = nn.Linear(feature_dim, 1) if self.quality_head_enabled else None
-        self.severity_head = nn.Linear(feature_dim, 1) if self.severity_head_enabled else None
+        self.severity_head = nn.Linear(feature_dim, 1)
 
     def encode(self, image: torch.Tensor) -> torch.Tensor:
         feature = self.backbone(image)
@@ -57,12 +54,10 @@ class SingleImageConvNeXt(nn.Module):
 
     def forward(self, image: torch.Tensor) -> dict[str, torch.Tensor]:
         feature = self.dropout(self.encode(image))
-        output = {"class_logits": self.class_head(feature)}
-        if self.quality_head is not None:
-            output["quality_logit"] = self.quality_head(feature).squeeze(1)
-        if self.severity_head is not None:
-            output["severity"] = torch.sigmoid(self.severity_head(feature).squeeze(1))
-        return output
+        return {
+            "class_logits": self.class_head(feature),
+            "severity": torch.sigmoid(self.severity_head(feature).squeeze(1)),
+        }
 
     def set_backbone_trainable(self, trainable: bool) -> None:
         for module in (self.backbone, self.feature_norm):
