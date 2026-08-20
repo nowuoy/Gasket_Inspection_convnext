@@ -27,8 +27,7 @@ model:
   architecture: convnext_tiny
   pretrained: true
   dropout: 0.20
-  # 아래 두 헤드는 해당 라벨을 실제로 수집한 뒤 true로 변경합니다.
-  quality_head_enabled: false     # is_ng 라벨용 / 양품인지 불량인지 판별
+  # 아래 헤드는 해당 라벨을 실제로 수집한 뒤 true로 변경합니다.
   severity_head_enabled: false    # 0.0~1.0 severity 라벨용 / 결함이 얼마나 심한지 판별
 
 train:
@@ -42,13 +41,11 @@ train:
   weight_decay: 0.01
   label_smoothing: 0.05
   class_weighting: auto      # auto | none
-  quality_loss_weight: 0.5  #quality head 손실 반영
   severity_loss_weight: 0.25  #severity head 손실 반영
   freeze_backbone_epochs: 3
   early_stopping_patience: 7
   checkpoint_metric: macro_f1  # macro_f1 | ng_recall | quality_f1 | severity_mae 체크포인트 선택 기준
   checkpoint_mode: max         # severity_mae를 선택할 때는 min
-  quality_metric_threshold: 0.5  #양/불량품 임계값
   mixed_precision: true
   group_columns: [lot_id, capture_session]  #데이터를 나눌 때 같은 lot이나 촬영 세션이 train/validation에 섞이지 않도록 그룹 기준으로 사용합니다.
   enforce_group_disjoint: true
@@ -64,10 +61,9 @@ decision:
   good_class: good
   # class_only | quality_head | severity
   # 현재 기본값은 결함 종류만으로 판정하는 임시 baseline입니다.
-  strategy: class_only
+  strategy: severity
   min_class_confidence: null  # TODO: validation/calibration 결과로 설정
   low_confidence_action: NG   # OK | NG | REVIEW; 현장 안전을 위해 기본 NG
-  quality_ng_threshold: null # quality_head 전략을 켤 때 TODO
   severity_ng_thresholds:    # severity 전략을 켤 때 클래스별 TODO
     shrinkage: null
     thread_defect: null
