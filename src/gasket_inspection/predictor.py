@@ -12,7 +12,7 @@ from PIL import Image
 
 from .config import choose_device, class_display_names, class_ids
 from .decision import DecisionPolicy
-from .images import build_transform, load_view_pair, load_view_pair_bytes
+from .images import build_transform, open_rgb, open_rgb_bytes
 from .model import build_model
 
 
@@ -41,7 +41,6 @@ class Predictor:
         device_override: str | None = None,
     ) -> None:
         self.cfg = cfg
-        self.source_input_cfg = cfg["input"]
         self.device = torch.device(choose_device(device_override or str(cfg.get("device", "auto"))))
         checkpoint_path = Path(checkpoint_path).expanduser().resolve()
         if not checkpoint_path.is_file():
@@ -50,10 +49,12 @@ class Predictor:
                 "먼저 라벨을 채우고 학습을 실행하거나 inference.checkpoint를 수정하세요."
             )
         checkpoint = _load_checkpoint(checkpoint_path, self.device)
-        required = {"model_state", "model_config", "input_config", "class_ids"}
+        required = {"model_state", "model_config", "input_config", "class_ids", "task_type"}
         missing = required - set(checkpoint)
         if missing:
             raise ValueError("호환되지 않는 체크포인트입니다. 누락: " + ", ".join(sorted(missing)))
+        if checkpoint["task_type"] != "single_image_classification":
+            raise ValueError("단일 이미지 모델 체크포인트가 아닙니다. 변경된 구조로 다시 학습하세요.")
 
         configured_classes = class_ids(cfg)
         if list(checkpoint["class_ids"]) != configured_classes:
@@ -62,13 +63,6 @@ class Predictor:
         for key in ("image_size", "padding_value", "mean", "std"):
             if checkpoint_input.get(key) != cfg["input"].get(key):
                 raise ValueError(f"현재 input.{key}가 학습 체크포인트와 다릅니다.")
-        if (
-            checkpoint_input.get("mode") == "combined_image"
-            and cfg["input"].get("mode") == "combined_image"
-            and checkpoint_input.get("combined") != cfg["input"].get("combined")
-        ):
-            raise ValueError("합성 이미지의 layout/first_view/split_ratio가 학습 때와 다릅니다.")
-
         model_cfg = deepcopy(checkpoint["model_config"])
         strategy = cfg["decision"].get("strategy", "class_only")
         if strategy == "quality_head" and not model_cfg.get("quality_head_enabled", False):
@@ -98,7 +92,7 @@ class Predictor:
                         dtype=torch.float16,
                         enabled=self.use_amp,
                     ):
-                        self.model(dummy, dummy)
+                        self.model(dummy)
             if self.device.type == "cuda":
                 torch.cuda.synchronize()
 
@@ -106,26 +100,16 @@ class Predictor:
         self,
         sample_id: str,
         *,
-        front_path: str | Path | None = None,
-        side_path: str | Path | None = None,
-        combined_path: str | Path | None = None,
+        image_path: str | Path,
     ) -> dict[str, Any]:
-        front, side = load_view_pair(
-            self.source_input_cfg,
-            front_path=front_path,
-            side_path=side_path,
-            combined_path=combined_path,
-        )
-        return self.predict_images(sample_id, front, side)
+        return self.predict_image(sample_id, open_rgb(image_path))
 
-    def predict_images(
+    def predict_image(
         self,
         sample_id: str,
-        front_image: Image.Image,
-        side_image: Image.Image,
+        image: Image.Image,
     ) -> dict[str, Any]:
-        front = self.transform(front_image).unsqueeze(0).to(self.device)
-        side = self.transform(side_image).unsqueeze(0).to(self.device)
+        image_tensor = self.transform(image).unsqueeze(0).to(self.device)
         if self.device.type == "cuda":
             torch.cuda.synchronize()
         start = time.perf_counter()
@@ -134,7 +118,7 @@ class Predictor:
             dtype=torch.float16,
             enabled=self.use_amp,
         ):
-            output = self.model(front, side)
+            output = self.model(image_tensor)
             for output_name, tensor in output.items():
                 if not bool(torch.isfinite(tensor).all()):
                     raise FloatingPointError(f"모델 출력에 NaN/Inf가 있습니다: {output_name}")
@@ -177,14 +161,7 @@ class Predictor:
         self,
         sample_id: str,
         *,
-        front_bytes: bytes | None = None,
-        side_bytes: bytes | None = None,
-        combined_bytes: bytes | None = None,
+        image_bytes: bytes,
     ) -> dict[str, Any]:
-        front, side = load_view_pair_bytes(
-            self.source_input_cfg,
-            front_bytes=front_bytes,
-            side_bytes=side_bytes,
-            combined_bytes=combined_bytes,
-        )
-        return self.predict_images(sample_id, front, side)
+        image = open_rgb_bytes(image_bytes, "image bytes")
+        return self.predict_image(sample_id, image)
