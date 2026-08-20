@@ -12,7 +12,7 @@ from gasket_inspection.training import train  # noqa: E402
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Dual-view ConvNeXt 학습")
+    parser = argparse.ArgumentParser(description="단일 이미지 ConvNeXt 학습")
     parser.add_argument("--config", type=Path, default=PROJECT_ROOT / "configs" / "default.yaml")
     args = parser.parse_args()
     checkpoint = train(load_config(args.config))
@@ -21,4 +21,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
