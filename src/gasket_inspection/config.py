@@ -137,10 +137,9 @@ def validate_config(cfg: dict[str, Any]) -> None:
     label_smoothing = float(train_cfg.get("label_smoothing", -1.0))
     if not 0.0 <= label_smoothing < 1.0:
         raise ConfigError("train.label_smoothing은 0 이상 1 미만이어야 합니다.")
-    for key in ("quality_loss_weight", "severity_loss_weight"):
-        if float(train_cfg.get(key, -1.0)) < 0.0:
-            raise ConfigError(f"train.{key}는 0 이상이어야 합니다.")
-    allowed_checkpoint_metrics = {"macro_f1", "ng_recall", "quality_f1", "severity_mae"}
+    if float(train_cfg.get("severity_loss_weight", -1.0)) <= 0.0:
+        raise ConfigError("train.severity_loss_weight는 0보다 커야 합니다.")
+    allowed_checkpoint_metrics = {"macro_f1", "ng_recall", "severity_mae"}
     if train_cfg.get("checkpoint_metric", "macro_f1") not in allowed_checkpoint_metrics:
         raise ConfigError("train.checkpoint_metric 값이 올바르지 않습니다.")
     if train_cfg.get("checkpoint_mode", "max") not in {"max", "min"}:
@@ -152,13 +151,6 @@ def validate_config(cfg: dict[str, Any]) -> None:
         raise ConfigError(
             f"train.checkpoint_metric={checkpoint_metric}에는 checkpoint_mode={expected_mode}를 사용하세요."
         )
-    if checkpoint_metric == "quality_f1" and not model_cfg.get("quality_head_enabled", False):
-        raise ConfigError("quality_f1 선택에는 quality head가 필요합니다.")
-    if checkpoint_metric == "severity_mae" and not model_cfg.get("severity_head_enabled", False):
-        raise ConfigError("severity_mae 선택에는 severity head가 필요합니다.")
-    quality_metric_threshold = float(train_cfg.get("quality_metric_threshold", 0.5))
-    if not 0.0 <= quality_metric_threshold <= 1.0:
-        raise ConfigError("train.quality_metric_threshold는 0~1이어야 합니다.")
     augmentation = train_cfg.get("augmentation", {})
     if not 0.0 <= float(augmentation.get("rotation_degrees", -1.0)) <= 180.0:
         raise ConfigError("augmentation.rotation_degrees 범위가 올바르지 않습니다.")
@@ -170,8 +162,6 @@ def validate_config(cfg: dict[str, Any]) -> None:
 
     boolean_fields = (
         (model_cfg, "pretrained", "model.pretrained"),
-        (model_cfg, "quality_head_enabled", "model.quality_head_enabled"),
-        (model_cfg, "severity_head_enabled", "model.severity_head_enabled"),
         (train_cfg, "mixed_precision", "train.mixed_precision"),
         (train_cfg, "enforce_group_disjoint", "train.enforce_group_disjoint"),
         (cfg.get("inference", {}), "use_amp", "inference.use_amp"),
@@ -181,33 +171,16 @@ def validate_config(cfg: dict[str, Any]) -> None:
         if not isinstance(section.get(key), bool):
             raise ConfigError(f"{display_key}는 true 또는 false여야 합니다.")
 
-    strategy = cfg.get("decision", {}).get("strategy")
-    if strategy not in {"class_only", "quality_head", "severity"}:
-        raise ConfigError("decision.strategy가 올바르지 않습니다.")
-
-    low_confidence_action = cfg["decision"].get("low_confidence_action", "NG")
-    if low_confidence_action not in {"OK", "NG", "REVIEW"}:
-        raise ConfigError("decision.low_confidence_action은 OK, NG, REVIEW 중 하나여야 합니다.")
-    min_confidence = cfg["decision"].get("min_class_confidence")
-    if min_confidence is not None and not 0.0 <= float(min_confidence) <= 1.0:
-        raise ConfigError("decision.min_class_confidence는 0~1이어야 합니다.")
-
-    if strategy == "quality_head":
-        if not cfg.get("model", {}).get("quality_head_enabled", False):
-            raise ConfigError("quality_head 전략에는 model.quality_head_enabled=true가 필요합니다.")
-        if cfg["decision"].get("quality_ng_threshold") is None:
-            raise ConfigError("quality_head 전략의 NG threshold를 먼저 보정해야 합니다.")
-        if not 0.0 <= float(cfg["decision"]["quality_ng_threshold"]) <= 1.0:
-            raise ConfigError("decision.quality_ng_threshold는 0~1이어야 합니다.")
-    if strategy == "severity":
-        if not cfg.get("model", {}).get("severity_head_enabled", False):
-            raise ConfigError("severity 전략에는 model.severity_head_enabled=true가 필요합니다.")
-        thresholds = cfg["decision"].get("severity_ng_thresholds", {})
-        missing = [class_id for class_id in configured_ids[1:] if thresholds.get(class_id) is None]
-        if missing:
-            raise ConfigError("severity threshold가 비어 있습니다: " + ", ".join(missing))
-        if any(not 0.0 <= float(thresholds[class_id]) <= 1.0 for class_id in configured_ids[1:]):
-            raise ConfigError("severity threshold는 모두 0~1이어야 합니다.")
+    good_class = cfg["decision"].get("good_class", "good")
+    if good_class not in configured_ids:
+        raise ConfigError(f"decision.good_class가 클래스 목록에 없습니다: {good_class}")
+    defect_ids = [class_id for class_id in configured_ids if class_id != good_class]
+    thresholds = cfg["decision"].get("severity_ng_thresholds", {})
+    missing = [class_id for class_id in defect_ids if thresholds.get(class_id) is None]
+    if missing:
+        raise ConfigError("severity threshold가 비어 있습니다: " + ", ".join(missing))
+    if any(not 0.0 <= float(thresholds[class_id]) <= 1.0 for class_id in defect_ids):
+        raise ConfigError("severity threshold는 모두 0~1이어야 합니다.")
 
     inference_cfg = cfg.get("inference", {})
     if int(inference_cfg.get("warmup_iterations", 0)) < 0:
