@@ -17,22 +17,15 @@ classes:
     name_ko: 이염 불량
 
 input:
-  # paired_files: <검사ID>__front.jpg + <검사ID>__side.jpg
-  # combined_image: 한 파일을 아래 규칙에 따라 전면/측면으로 분리
-  mode: paired_files
+  # 한 번의 학습/추론마다 상단면 또는 측면 사진 한 장만 독립적으로 처리합니다.
   image_size: 224            # TODO: 작은 burr가 보존되는지 확인 후 224/320/384 비교
   padding_value: [0, 0, 0]
   mean: [0.485, 0.456, 0.406]
   std: [0.229, 0.224, 0.225]
-  combined:
-    layout: horizontal       # horizontal | vertical
-    first_view: front        # front | side
-    split_ratio: 0.5         # 첫 영역이 전체 폭/높이에서 차지하는 비율
 
 model:
   architecture: convnext_tiny
   pretrained: true
-  fusion_hidden_dim: 512
   dropout: 0.20
   # 아래 두 헤드는 해당 라벨을 실제로 수집한 뒤 true로 변경합니다.
   quality_head_enabled: false     # is_ng 라벨용
@@ -93,10 +86,8 @@ realtime:
   state_db: runtime/state/inspections.sqlite3
   poll_interval_s: 0.20
   stable_checks: 3           # 크기/mtime이 연속으로 동일해야 읽음
-  pair_timeout_s: 10.0
   retry_errors: false
   retry_backoff_s: 5.0
   max_retry_attempts: 3
   # inspection_id에는 영문/숫자/_/-만 허용하여 경로 충돌을 방지합니다.
-  paired_filename_regex: "^(?P<id>[A-Za-z0-9_-]+)__(?P<view>front|side)\\.(?P<ext>jpg|jpeg|png|bmp|tif|tiff)$"
-  combined_filename_regex: "^(?P<id>[A-Za-z0-9_-]+)__combined\\.(?P<ext>jpg|jpeg|png|bmp|tif|tiff)$"
+  filename_regex: "^(?P<id>[A-Za-z0-9_-]+)\\.(?P<ext>jpg|jpeg|png|bmp|tif|tiff)$"
