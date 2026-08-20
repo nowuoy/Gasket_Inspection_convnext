@@ -13,7 +13,6 @@ MANIFEST_COLUMNS = (
     "sample_id",
     "image_path",
     "defect_type",
-    "is_ng",
     "severity",
     "lot_id",
     "capture_session",
