@@ -1,26 +1,26 @@
-[README.md](https://github.com/user-attachments/files/31182982/README.md)
+[README.md](https://github.com/user-attachments/files/31250887/README.md)
 # 고무패킹 ConvNeXt 검사 프로토타입
 
-Hikrobot MV-CS050-10GC로 취득해 PC에 저장된 전면·측면 이미지를 받아, 고무패킹 한 개를 6개 클래스 중 하나로 분류하고 OK/NG 결과를 JSON으로 내보내는 확장용 소스코드입니다. 카메라 trigger·노출·GigE SDK 제어는 포함하지 않았고, 카메라 제어 프로그램과 이 프로젝트의 계약은 **이미지 파일명과 저장 폴더**로 분리했습니다.
+Hikrobot MV-CS050-10GC로 취득해 PC에 저장된 상단면 또는 측면 이미지 한 장을 받아, 6개 클래스 중 하나로 분류하고 OK/NG 결과를 JSON으로 내보내는 확장용 소스코드입니다. 각 사진은 다른 사진과 결합하거나 짝짓지 않고 독립적으로 처리합니다. 카메라 trigger·노출·GigE SDK 제어는 포함하지 않았고, 카메라 제어 프로그램과 이 프로젝트의 계약은 **이미지 파일명과 저장 폴더**로 분리했습니다.
 
 ## 현재 구현 범위
 
 - 클래스: `good`, `shrinkage`, `thread_defect`, `incomplete_molding`, `burr`, `contamination`
-- ImageNet 사전학습 ConvNeXt-Tiny encoder 한 개를 전면·측면에 공유
-- 두 view의 feature를 이어 붙이는 late fusion과 6-class head
+- ImageNet 사전학습 ConvNeXt-Tiny 기반 단일 이미지 분류기
+- 상단면과 측면 사진을 같은 신경망으로 각각 독립 처리하는 6-class head
 - 선택 가능한 `is_ng` quality head 및 `severity` head의 골격
 - 학습/검증, class imbalance weight, macro-F1, 클래스별 지표, confusion matrix
 - 단일 건 추론
-- 폴더 자동 감시, 완전쓰기 확인, 검사 ID 기준 전면·측면 pairing
+- 폴더 자동 감시, 완전쓰기 확인, 이미지 한 장 단위 처리
 - SQLite 중복 처리 방지, 검사별 원자적 JSON 결과 저장
 
 전체 흐름은 다음과 같습니다.
 
 ```text
 Hikrobot 제어/저장 프로그램
-        │  ID__front.jpg + ID__side.jpg
+        │  ID.jpg (상단면 또는 측면 한 장)
         ▼
-runtime/inbox ── 안정화·pairing ──► shared ConvNeXt ──► 판정 정책
+runtime/inbox ── 파일 안정화 ──► ConvNeXt ──► 판정 정책
                                                            │
                          SQLite 상태 ◄──────────────────────┤
                          results/ID.json ◄──────────────────┘
@@ -59,55 +59,37 @@ python -m pip install -r requirements.txt
 
 NVIDIA GPU를 사용할 경우에는 시스템의 CUDA 환경에 맞는 PyTorch를 먼저 설치하는 편이 안전합니다. GPU가 없으면 `device: auto`가 자동으로 CPU를 사용합니다. 사전학습 weight는 첫 학습 때 내려받으므로 폐쇄망이면 미리 캐시에 넣거나 `model.pretrained: false`로 바꿔야 합니다.
 
-## 2. 이미지 입력 형식 선택
+## 2. 이미지 입력 형식
 
-### 권장: 전면·측면 파일 두 장
-
-기본값인 `input.mode: paired_files`를 사용합니다. 한 제품의 두 파일은 반드시 같은 고유 ID를 가져야 합니다.
+한 번의 학습 또는 추론에는 사진 한 장만 사용합니다. 상단면과 측면 사진을 모두 검사하려면 각 사진에 서로 다른 고유 ID를 부여합니다.
 
 ```text
-P000001__front.jpg
-P000001__side.jpg
-P000002__front.jpg
-P000002__side.jpg
+P000001_TOP.jpg
+P000001_SIDE.jpg
+P000002_TOP.jpg
+P000002_SIDE.jpg
 ```
 
-시간이 비슷하다는 이유로 두 이미지를 짝짓지 않습니다. 컨트롤러가 발급한 ID만 사용하므로 연속 제품이 뒤섞이지 않습니다.
+예를 들어 `P000001_TOP`과 `P000001_SIDE`는 서로 독립된 `sample_id`이며 각각 별도의 결과 JSON을 생성합니다.
 
 실시간 watcher는 Windows 파일명의 대소문자 충돌을 막기 위해 검사 ID를 대문자로 정규화합니다. 따라서 `p000001`과 `P000001`을 서로 다른 제품 ID로 사용하면 안 됩니다.
-
-### 한 파일 안에 두 view가 합쳐진 경우
-
-`input.mode: combined_image`로 바꾸고 실시간 입력 파일은 `P000001__combined.jpg`처럼 저장합니다. 아래 값을 실제 배치에 맞춥니다.
-
-```yaml
-input:
-  mode: combined_image
-  combined:
-    layout: horizontal   # 좌우면 horizontal, 상하면 vertical
-    first_view: front    # 첫 영역이 side라면 side
-    split_ratio: 0.5
-```
-
-합성 이미지 전체를 그대로 224×224로 줄이지 않고 먼저 두 영역으로 나눈 뒤 각각 encoder에 넣습니다. 실제 두 영역 사이에 여백이 있거나 위치가 고정 ROI와 다르면 `images.py`의 `split_combined_image()`를 실제 ROI crop으로 수정하십시오.
 
 ## 3. 라벨 manifest 채우기
 
 `data/labels.csv`는 현재 header만 있습니다. 이미지 경로는 이 CSV가 있는 `data/` 폴더 기준 상대 경로 또는 절대 경로로 넣습니다.
 
 ```csv
-sample_id,front_path,side_path,combined_path,defect_type,is_ng,severity,lot_id,capture_session,split
-P000001,images/P000001__front.jpg,images/P000001__side.jpg,,good,0,0.0,LOT01,S01,train
-P000002,images/P000002__front.jpg,images/P000002__side.jpg,,burr,1,0.8,LOT02,S02,val
+sample_id,image_path,defect_type,is_ng,severity,lot_id,capture_session,split
+P000001_TOP,images/P000001_TOP.jpg,good,0,0.0,LOT01,S01,train
+P000002_SIDE,images/P000002_SIDE.jpg,burr,1,0.8,LOT02,S02,val
 ```
 
 각 열의 의미는 다음과 같습니다.
 
 | 열 | 의미 |
 |---|---|
-| `sample_id` | 실물 한 개의 고유 ID. 두 view를 하나로 묶는 기준 |
-| `front_path`, `side_path` | `paired_files` 모드 이미지 경로 |
-| `combined_path` | `combined_image` 모드 이미지 경로 |
+| `sample_id` | 사진 한 장의 고유 검사 ID |
+| `image_path` | 독립적으로 학습·검사할 이미지 경로 |
 | `defect_type` | 6개 영문 class ID 중 하나 |
 | `is_ng` | 선택 라벨. 기준 확정 전에는 빈칸 가능 |
 | `severity` | 선택 라벨 0.0~1.0. 기준 확정 전에는 빈칸 가능 |
@@ -155,18 +137,15 @@ runs/history.json  loss, macro-F1, 클래스별 지표, 오판 수치
 
 ## 5. 이미지 한 건 시험
 
-두 파일 입력:
+사진 한 장 입력:
 
 ```powershell
 python scripts/predict.py `
   --config configs/default.yaml `
   --checkpoint runs/best.pt `
   --sample-id TEST001 `
-  --front path\to\TEST001__front.jpg `
-  --side path\to\TEST001__side.jpg
+  --image path\to\TEST001.jpg
 ```
-
-합성 이미지 입력은 설정을 `combined_image`로 바꾼 뒤 `--combined path\to\TEST001.jpg`를 사용합니다.
 
 ## 6. 실시간 자동 감시
 
@@ -178,13 +157,12 @@ python scripts/watch_folder.py `
   --checkpoint runs/best.pt
 ```
 
-카메라 제어 프로그램은 `runtime/inbox/`에 두 view를 저장합니다. 파일이 쓰이는 도중 읽는 일을 줄이기 위해 다음 순서를 권장합니다.
+카메라 제어 프로그램은 `runtime/inbox/`에 사진을 한 장씩 저장합니다. 파일이 쓰이는 도중 읽는 일을 줄이기 위해 다음 순서를 권장합니다.
 
-1. 감시 정규식과 일치하지 않는 임시 이름(예: `P000001__front.tmp.jpg`)으로 저장
-2. 저장과 close가 성공한 뒤 `os.replace()`로 `P000001__front.jpg`에 원자적 rename
-3. side도 같은 방식으로 저장
+1. 감시 정규식과 일치하지 않는 임시 이름(예: `P000001.tmp.jpg`)으로 저장
+2. 저장과 close가 성공한 뒤 `os.replace()`로 `P000001.jpg`에 원자적 rename
 
-임시 rename을 적용하지 못해도 watcher가 파일 크기와 수정 시간이 기본 3회 연속 같을 때만 읽고, Pillow decode까지 성공해야 추론합니다. 전면·측면 도착 순서는 상관없습니다.
+임시 rename을 적용하지 못해도 watcher가 파일 크기와 수정 시간이 기본 3회 연속 같을 때만 읽고, Pillow decode까지 성공해야 추론합니다.
 
 결과는 다음 두 곳에 기록됩니다.
 
@@ -275,12 +253,12 @@ decision:
 
 ## 9. 촬영 시 확인할 사항
 
-- 패킹 외곽의 burr가 crop되지 않도록 전면·측면 모두 전체 형상을 포함
+- 패킹 외곽의 burr가 crop되지 않도록 각 사진에 전체 형상을 포함
 - 노출, gain, white balance, 조명 위치와 색온도를 고정하고 기록
 - 이염 검출이 있으므로 Bayer 변환 및 RGB/BGR 순서를 고정
 - 결함별로 몰아서 촬영하지 말고 class 순서를 섞어 시간/배경 shortcut 방지
-- 같은 실물의 연속 frame이나 두 view가 다른 split으로 나뉘지 않게 관리
-- 초점 불량, payload 손상, 한 view 누락은 억지 추론하지 않고 재촬영
+- 같은 실물에서 촬영한 상단면·측면·연속 frame이 다른 split으로 나뉘지 않게 관리
+- 초점 불량이나 payload 손상이 있는 사진은 억지 추론하지 않고 재촬영
 
 현재 전처리는 center crop 대신 원본 전체를 정사각 padding한 후 resize합니다. 작은 burr가 224에서 사라진다면 먼저 광학 배율과 ROI를 개선하고, 그 다음 `image_size` 320/384를 검증하십시오.
 
@@ -290,14 +268,14 @@ decision:
 python -m pytest
 ```
 
-포함된 테스트는 class/판정 경계값, 합성 이미지 분할, 파일 안정화 검사를 확인합니다. 실제 데이터가 생긴 뒤에는 알려진 이미지→예상 JSON, checkpoint save/load 동일성, 깨진 JPEG, 한 view 누락, 동일 이벤트 중복, 장시간 지연시간 테스트를 추가하십시오.
+포함된 테스트는 class/판정 경계값, 이미지 padding, 파일 안정화 검사를 확인합니다. 실제 데이터가 생긴 뒤에는 알려진 이미지→예상 JSON, checkpoint save/load 동일성, 깨진 JPEG, 동일 이벤트 중복, 장시간 지연시간 테스트를 추가하십시오.
 
 ## 데이터 확보 후 반드시 채울 TODO
 
 - `data/labels.csv`의 이미지 경로와 6-class 라벨
 - 한 제품에 복수 결함이 가능한지 여부 및 대표 결함 선정 규칙
 - 경미 결함을 허용한다면 `is_ng` 또는 객관적 `severity` 라벨
-- `input.image_size`, 합성 이미지라면 ROI/분할 위치
+- `input.image_size`
 - validation 기반 low-confidence 및 NG threshold
 - `decision.criteria_version`
 - `inference.checkpoint`
