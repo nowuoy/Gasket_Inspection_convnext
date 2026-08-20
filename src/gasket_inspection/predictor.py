@@ -53,8 +53,8 @@ class Predictor:
         missing = required - set(checkpoint)
         if missing:
             raise ValueError("호환되지 않는 체크포인트입니다. 누락: " + ", ".join(sorted(missing)))
-        if checkpoint["task_type"] != "single_image_classification":
-            raise ValueError("단일 이미지 모델 체크포인트가 아닙니다. 변경된 구조로 다시 학습하세요.")
+        if checkpoint["task_type"] != "single_image_severity":
+            raise ValueError("severity 전용 단일 이미지 체크포인트가 아닙니다. 다시 학습하세요.")
 
         configured_classes = class_ids(cfg)
         if list(checkpoint["class_ids"]) != configured_classes:
@@ -64,11 +64,6 @@ class Predictor:
             if checkpoint_input.get(key) != cfg["input"].get(key):
                 raise ValueError(f"현재 input.{key}가 학습 체크포인트와 다릅니다.")
         model_cfg = deepcopy(checkpoint["model_config"])
-        strategy = cfg["decision"].get("strategy", "class_only")
-        if strategy == "quality_head" and not model_cfg.get("quality_head_enabled", False):
-            raise ValueError("현재 체크포인트에는 quality head가 없습니다. 해당 라벨로 재학습하세요.")
-        if strategy == "severity" and not model_cfg.get("severity_head_enabled", False):
-            raise ValueError("현재 체크포인트에는 severity head가 없습니다. 해당 라벨로 재학습하세요.")
         model_cfg["pretrained"] = False  # 로컬 state를 읽으므로 ImageNet 파일을 다시 받지 않습니다.
         self.model = build_model(len(configured_classes), model_cfg).to(self.device)
         self.model.load_state_dict(checkpoint["model_state"], strict=True)
@@ -123,12 +118,7 @@ class Predictor:
                 if not bool(torch.isfinite(tensor).all()):
                     raise FloatingPointError(f"모델 출력에 NaN/Inf가 있습니다: {output_name}")
             probability_tensor = torch.softmax(output["class_logits"].float(), dim=1)[0]
-            quality_probability = (
-                float(torch.sigmoid(output["quality_logit"])[0].item())
-                if "quality_logit" in output
-                else None
-            )
-            severity = float(output["severity"][0].item()) if "severity" in output else None
+            severity = float(output["severity"][0].item())
         if self.device.type == "cuda":
             torch.cuda.synchronize()
         latency_ms = (time.perf_counter() - start) * 1000.0
@@ -139,7 +129,6 @@ class Predictor:
         }
         decision = self.policy.decide(
             probabilities,
-            quality_probability=quality_probability,
             severity=severity,
         )
         return {
@@ -151,7 +140,6 @@ class Predictor:
                 "checkpoint_sha256_prefix": self.model_version,
             },
             "probabilities": probabilities,
-            "quality_probability": quality_probability,
             "severity": severity,
             "decision": decision.to_dict(),
             "latency_ms": {"inference": latency_ms},
