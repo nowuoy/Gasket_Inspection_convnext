@@ -1,5 +1,5 @@
 # 이 파일의 TODO 항목은 촬영/라벨링/검증 데이터가 준비된 뒤 확정해야 합니다.
-seed: 42
+seed: 42 #난수
 device: auto                 # auto | cpu | cuda
 
 classes:
@@ -19,8 +19,8 @@ classes:
 input:
   # 한 번의 학습/추론마다 상단면 또는 측면 사진 한 장만 독립적으로 처리합니다.
   image_size: 224            # TODO: 작은 burr가 보존되는지 확인 후 224/320/384 비교
-  padding_value: [0, 0, 0]
-  mean: [0.485, 0.456, 0.406]
+  padding_value: [0, 0, 0] #이미지 비율을 유지하면서 빈 공간을 채울 때 사용할 RGB 색상
+  mean: [0.485, 0.456, 0.406] #imagenet 사전학습 모델 이미지 정규화
   std: [0.229, 0.224, 0.225]
 
 model:
@@ -28,13 +28,13 @@ model:
   pretrained: true
   dropout: 0.20
   # 아래 두 헤드는 해당 라벨을 실제로 수집한 뒤 true로 변경합니다.
-  quality_head_enabled: false     # is_ng 라벨용
-  severity_head_enabled: false    # 0.0~1.0 severity 라벨용
+  quality_head_enabled: false     # is_ng 라벨용 / 양품인지 불량인지 판별
+  severity_head_enabled: false    # 0.0~1.0 severity 라벨용 / 결함이 얼마나 심한지 판별
 
 train:
   manifest: data/labels.csv
-  output_dir: runs
-  batch_size: 8
+  output_dir: runs  #학습 결과와 체크포인트를 저장하는 runs 파일, 실행 후 즉시 생성됨
+  batch_size: 8  
   epochs: 30
   num_workers: 0             # Windows에서는 0부터 시작 권장
   learning_rate: 0.0001
@@ -42,17 +42,17 @@ train:
   weight_decay: 0.01
   label_smoothing: 0.05
   class_weighting: auto      # auto | none
-  quality_loss_weight: 0.5
-  severity_loss_weight: 0.25
+  quality_loss_weight: 0.5  #quality head 손실 반영
+  severity_loss_weight: 0.25  #severity head 손실 반영
   freeze_backbone_epochs: 3
   early_stopping_patience: 7
-  checkpoint_metric: macro_f1  # macro_f1 | ng_recall | quality_f1 | severity_mae
+  checkpoint_metric: macro_f1  # macro_f1 | ng_recall | quality_f1 | severity_mae 체크포인트 선택 기준
   checkpoint_mode: max         # severity_mae를 선택할 때는 min
-  quality_metric_threshold: 0.5
+  quality_metric_threshold: 0.5  #양/불량품 임계값
   mixed_precision: true
-  group_columns: [lot_id, capture_session]
+  group_columns: [lot_id, capture_session]  #데이터를 나눌 때 같은 lot이나 촬영 세션이 train/validation에 섞이지 않도록 그룹 기준으로 사용합니다.
   enforce_group_disjoint: true
-  augmentation:
+  augmentation:  #데이터 증강 뻥튀기. 나중에 더 생각해보자.
     rotation_degrees: 5
     translate_fraction: 0.03
     brightness: 0.05
@@ -60,7 +60,7 @@ train:
     saturation: 0.02         # 이염 신호를 훼손하지 않도록 강한 색 증강 금지
 
 decision:
-  criteria_version: TODO-v0
+  criteria_version: TODO-v0  #판정기준 해야 돼.
   good_class: good
   # class_only | quality_head | severity
   # 현재 기본값은 결함 종류만으로 판정하는 임시 baseline입니다.
